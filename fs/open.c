@@ -33,9 +33,6 @@
 #include <linux/dnotify.h>
 #include <linux/compat.h>
 #include <linux/mnt_idmapping.h>
-#ifdef CONFIG_KSU_SUSFS
-#include <linux/susfs_def.h>
-#endif
 
 #include "internal.h"
 #include <trace/hooks/syscall_check.h>
@@ -421,13 +418,6 @@ static const struct cred *access_override_creds(void)
 	return old_cred;
 }
 
-#ifdef CONFIG_KSU_SUSFS
-extern bool ksu_su_compat_enabled __read_mostly;
-extern bool __ksu_is_allow_uid_for_current(uid_t uid);
-extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,
-			int *flags);
-#endif
-
 static long do_faccessat(int dfd, const char __user *filename, int mode, int flags)
 {
 	struct path path;
@@ -435,18 +425,6 @@ static long do_faccessat(int dfd, const char __user *filename, int mode, int fla
 	int res;
 	unsigned int lookup_flags = LOOKUP_FOLLOW;
 	const struct cred *old_cred = NULL;
-
-#ifdef CONFIG_KSU_SUSFS
-	if (likely(susfs_is_current_proc_umounted()) || !ksu_su_compat_enabled) {
-		goto orig_flow;
-	}
-
-	if (unlikely(__ksu_is_allow_uid_for_current(current_uid().val))) {
-		ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
-	}
-
-orig_flow:
-#endif
 
 	if (mode & ~S_IRWXO)	/* where's F_OK, X_OK, W_OK, R_OK? */
 		return -EINVAL;
@@ -1397,57 +1375,23 @@ static bool libperfmgr_redirect(struct file **f, int dfd, struct filename *n,
 	return true;
 }
 
-#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-extern int susfs_open_redirect_spoof_do_sys_openat(struct inode *inode, char *out_redirected_name);
-#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-
 static long do_sys_openat2(int dfd, const char __user *filename,
 			   struct open_how *how)
 {
 	struct open_flags op;
 	int fd = build_open_flags(how, &op);
 	struct filename *tmp;
-#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-	char *redirected_name = NULL;
-	bool is_inode_open_redirect = false;
-#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 
 	if (fd)
 		return fd;
 
-#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-retry:
-	if (is_inode_open_redirect && redirected_name) {
-		tmp = getname_kernel(redirected_name);
-		goto bypass_orig_flow;
-	}
-#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-
 	tmp = getname(filename);
-#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-bypass_orig_flow:
-#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 	if (IS_ERR(tmp))
 		return PTR_ERR(tmp);
 
 	fd = get_unused_fd_flags(how->flags);
 	if (fd >= 0) {
 		struct file *f = do_filp_open(dfd, tmp, &op);
-
-#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-		if (f && !IS_ERR(f) && !is_inode_open_redirect) {
-			if (PRE_CHECK_OPEN_REDIRECT_WITHOUT_UID_CHECK(file_inode(f))) {
-				if (!susfs_open_redirect_spoof_do_sys_openat(file_inode(f), redirected_name)) {
-					is_inode_open_redirect = true;
-					filp_close(f, NULL);
-					put_unused_fd(fd);
-					putname(tmp);
-					goto retry;
-				}
-			}
-		}
-#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-
 		if (IS_ERR(f) && !libperfmgr_redirect(&f, dfd, tmp, &op, how)) {
 			put_unused_fd(fd);
 			fd = PTR_ERR(f);
@@ -1456,10 +1400,6 @@ bypass_orig_flow:
 			fd_install(fd, f);
 		}
 	}
-#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-	if (is_inode_open_redirect && redirected_name)
-		kfree(redirected_name);
-#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 	putname(tmp);
 	return fd;
 }
