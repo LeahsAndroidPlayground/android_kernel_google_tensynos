@@ -79,6 +79,9 @@
 #include <linux/vmalloc.h>
 #include <linux/sched/sysctl.h>
 #include <linux/set_memory.h>
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+#include <linux/susfs_def.h>
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
 
 #include <trace/events/kmem.h>
 #include <trace/hooks/mm.h>
@@ -5927,6 +5930,13 @@ int __access_remote_vm(struct mm_struct *mm, unsigned long addr, void *buf,
 		if (!vma)
 			return 0;
 	}
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+	if (vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file))) {
+		mmap_read_unlock(mm);
+		return 0;
+	}
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
 
 	/* ignore errors, just check how much was successfully transferred */
 	while (len) {

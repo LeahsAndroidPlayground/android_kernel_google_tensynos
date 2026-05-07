@@ -452,22 +452,8 @@ show_map_vma(struct seq_file *m, struct vm_area_struct *vma)
 		}
 #endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 #ifdef CONFIG_KSU_SUSFS_SUS_MAP
-		if (SUSFS_IS_INODE_SUS_MAP(inode)) {
-			seq_setwidth(m, 25 + sizeof(void *) * 6 - 1);
-			seq_put_hex_ll(m, NULL, vma->vm_start, 8);
-			seq_put_hex_ll(m, "-", vma->vm_end, 8);
-			seq_putc(m, ' ');
-			seq_putc(m, '-');
-			seq_putc(m, '-');
-			seq_putc(m, '-');
-			seq_putc(m, 'p');
-			seq_put_hex_ll(m, " ", pgoff, 8);
-			seq_put_hex_ll(m, " ", MAJOR(dev), 2);
-			seq_put_hex_ll(m, ":", MINOR(dev), 2);
-			seq_put_decimal_ull(m, " ", ino);
-			seq_putc(m, ' ');
-			goto done;
-		}
+		if (SUSFS_IS_INODE_SUS_MAP(inode))
+			return;
 #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
 		dev = inode->i_sb->s_dev;
 		ino = inode->i_ino;
@@ -1112,30 +1098,17 @@ static int show_smap(struct seq_file *m, void *v)
 	struct vm_area_struct *vma = v;
 	struct mem_size_stats mss;
 
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+	if (vma && vma->vm_file) {
+		if (SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
+			return 0;
+	}
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+
 	memset(&mss, 0, sizeof(mss));
 
 	if (!vma_pages(vma))
 		goto show_pad;
-
-#ifdef CONFIG_KSU_SUSFS_SUS_MAP
-	if (vma->vm_file) {
-		struct inode *inode = file_inode(vma->vm_file);
-		if (SUSFS_IS_INODE_SUS_MAP(inode)) {
-			show_map_vma(m, vma);
-			SEQ_PUT_DEC("Size:           ", vma->vm_end - vma->vm_start);
-			SEQ_PUT_DEC(" kB\nKernelPageSize: ", vma_kernel_pagesize(vma));
-			SEQ_PUT_DEC(" kB\nMMUPageSize:    ", vma_mmu_pagesize(vma));
-			seq_puts(m, " kB\n");
-			__show_smap(m, &mss, false);
-			seq_printf(m, "THPeligible:    %d\n", 0);
-			if (arch_pkeys_enabled())
-					seq_printf(m, "ProtectionKey:  %8u\n", vma_pkey(vma));
-			seq_puts(m, "VmFlags: mr mw me");
-			seq_putc(m, '\n');
-			goto show_pad;
-		}
-	}
-#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
 
 	smap_gather_stats(vma, &mss, 0);
 
@@ -1195,15 +1168,9 @@ static int show_smaps_rollup(struct seq_file *m, void *v)
 	vma_start = vma->vm_start;
 	do {
 #ifdef CONFIG_KSU_SUSFS_SUS_MAP
-		if (vma->vm_file) {
-			struct inode *inode = file_inode(vma->vm_file);
-			if (SUSFS_IS_INODE_SUS_MAP(inode)) {
-				memset(&mss, 0, sizeof(mss));
-				goto bypass_orig_flow;
-			}
-		}
+		if (vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
+			goto bypass_orig_flow;
 #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
-
 		smap_gather_stats(vma, &mss, 0);
 #ifdef CONFIG_KSU_SUSFS_SUS_MAP
 bypass_orig_flow:
@@ -1270,7 +1237,14 @@ bypass_orig_flow:
 
 			/* Case 4 above */
 			if (vma->vm_end > last_vma_end)
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+			{
+				if (!vma->vm_file || !(SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file))))
+					smap_gather_stats(vma, &mss, last_vma_end);
+			}
+#else
 				smap_gather_stats(vma, &mss, last_vma_end);
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
 		}
 		/* Case 2 above */
 	} while ((vma = mas_find(&mas, ULONG_MAX)) != NULL);
@@ -2015,14 +1989,18 @@ static ssize_t pagemap_read(struct file *file, char __user *buf,
 		ret = mmap_read_lock_killable(mm);
 		if (ret)
 			goto out_free;
-		ret = walk_page_range(mm, start_vaddr, end, &pagemap_ops, &pm);
 #ifdef CONFIG_KSU_SUSFS_SUS_MAP
 		vma = find_vma(mm, start_vaddr);
 		if (vma && vma->vm_file) {
-			struct inode *inode = file_inode(vma->vm_file);
-			if (SUSFS_IS_INODE_SUS_MAP(inode))
+			if (SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file))) {
 				pm.buffer->pme = 0;
+				goto bypass_orig_flow;
+			}
 		}
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+		ret = walk_page_range(mm, start_vaddr, end, &pagemap_ops, &pm);
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+bypass_orig_flow:
 #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
 		mmap_read_unlock(mm);
 		start_vaddr = end;
